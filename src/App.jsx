@@ -63,7 +63,7 @@ const calculateAccurateAreaSqFt = (points) => {
 }
 
 /* =====================================================
-   GBA BYLAW ENGINE
+   GBA BYLAW & CONFIG ENGINE
 ===================================================== */
 const calculateGBABylaws = (areaSqFt, roadWidthFt, sideLengths = [], buildingHeightM = 11.5, hasStilt = false, buildingType = 'residential', selectedFloors = 3) => {
   let far = 1.75
@@ -146,7 +146,7 @@ const calculateGBABylaws = (areaSqFt, roadWidthFt, sideLengths = [], buildingHei
 }
 
 /* =====================================================
-   PROPER CONSTRUCTION COST ENGINE
+   DYNAMIC CONSTRUCTION COST & BOQ ENGINE
 ===================================================== */
 const calculateConstructionCost = (builtUpSqFt, quality = 'standard', buildingType = 'residential') => {
   const rates = buildingType === 'commercial' 
@@ -157,12 +157,6 @@ const calculateConstructionCost = (builtUpSqFt, quality = 'standard', buildingTy
   const totalCostINR = builtUpSqFt * baseRate
   const totalCostLakhs = (totalCostINR / 100000).toFixed(2)
 
-  const civil = ((totalCostINR * 0.48) / 100000).toFixed(2)
-  const finishing = ((totalCostINR * 0.24) / 100000).toFixed(2)
-  const electricalPlumbing = ((totalCostINR * 0.14) / 100000).toFixed(2)
-  const doorsWindows = ((totalCostINR * 0.08) / 100000).toFixed(2)
-  const approvalsContingency = ((totalCostINR * 0.06) / 100000).toFixed(2)
-
   const cementBags = Math.round(builtUpSqFt * 0.42)
   const steelTons = (builtUpSqFt * 0.0038).toFixed(1)
   const sandSqFt = Math.round(builtUpSqFt * 1.8)
@@ -172,7 +166,6 @@ const calculateConstructionCost = (builtUpSqFt, quality = 'standard', buildingTy
   return {
     totalCostLakhs,
     baseRate,
-    breakdownLakhs: { civil, finishing, electricalPlumbing, doorsWindows, approvalsContingency },
     materials: { cementBags, steelTons, sandSqFt, aggregateSqFt, bricksCount },
   }
 }
@@ -182,8 +175,9 @@ function App() {
   const [selectedTool, setSelectedTool] = useState('analyze')
 
   const [searchQuery, setSearchQuery] = useState('')
-  const [suggestions, setSuggestions] = useState([])
-  const [isSearching, setIsSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const searchContainerRef = useRef(null)
 
   const [message, setMessage] = useState('')
   const [mapMode, setMapMode] = useState('draw')
@@ -193,7 +187,6 @@ function App() {
   const [sideLengths, setSideLengths] = useState([])
   const [calculatedArea, setCalculatedArea] = useState(1200)
 
-  const [siteLocationName, setSiteLocationName] = useState('Sample 30x40 Plot, Bengaluru')
   const [roadWidth, setRoadWidth] = useState(30)
   const [buildingType, setBuildingType] = useState('residential')
   const [selectedFloors, setSelectedFloors] = useState(3)
@@ -208,6 +201,45 @@ function App() {
   const markersGroupRef = useRef(null)
   const plotPointsRef = useRef(plotPoints)
   plotPointsRef.current = plotPoints
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
+        setShowSuggestions(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    const query = searchQuery.trim()
+    if (query.length < 2) {
+      setSearchResults([])
+      setShowSuggestions(false)
+      return
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const endpoint = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query + ', Bengaluru, India')}&limit=5`
+        const res = await fetch(endpoint)
+        const data = await res.json()
+        if (data && data.length > 0) {
+          setSearchResults(data)
+          setShowSuggestions(true)
+        } else {
+          setSearchResults([])
+          setShowSuggestions(false)
+        }
+      } catch {
+        setSearchResults([])
+        setShowSuggestions(false)
+      }
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   const loadSamplePlotAndTool = (toolKey) => {
     const samplePoints = [
@@ -232,7 +264,6 @@ function App() {
     }
   }
 
-  // MAP INITIALIZATION AND LIFECYCLE
   useEffect(() => {
     if (currentScreen !== 'tool-view') return
     if (!mapElementRef.current) return
@@ -361,51 +392,30 @@ function App() {
     setMessage('Plot cleared. Click map to draw new boundary.')
   }
 
-  // OLA / UBER STYLE DEBOUNCED AUTOCOMPLETE EFFECT
-  useEffect(() => {
-    const query = searchQuery.trim()
-    if (query.length < 2) {
-      setSuggestions([])
-      setIsSearching(false)
-      return
-    }
-
-    setIsSearching(true)
-    const timeoutId = setTimeout(async () => {
-      try {
-        const endpoint = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query + ', Bengaluru, India')}&limit=5`
-        const res = await fetch(endpoint)
-        const data = await res.json()
-        setSuggestions(data || [])
-      } catch {
-        setSuggestions([])
-      } finally {
-        setIsSearching(false)
-      }
-    }, 300) // 300ms debounce
-
-    return () => clearTimeout(timeoutId)
-  }, [searchQuery])
-
-  const selectSuggestion = (item) => {
-    const lat = parseFloat(item.lat)
-    const lon = parseFloat(item.lon)
-    const name = item.display_name.split(',')[0]
-    
-    setSearchQuery(name)
-    setSiteLocationName(name)
-    setSuggestions([])
-    setIsSearching(false)
-
-    if (mapRef.current) {
-      mapRef.current.setView([lat, lon], 17)
-    }
-    setMessage('Location selected. Draw plot corners on map!')
+  const selectLocation = (item) => {
+    const { lat, lon, display_name } = item
+    mapRef.current?.setView([parseFloat(lat), parseFloat(lon)], 17)
+    setSearchQuery(display_name.split(',')[0])
+    setShowSuggestions(false)
+    setMessage('Location found. Draw plot corners on map!')
   }
 
   const searchLocation = async () => {
-    if (suggestions.length > 0) {
-      selectSuggestion(suggestions[0])
+    const rawQuery = searchQuery.trim()
+    if (!rawQuery) return
+    if (searchResults.length > 0) {
+      selectLocation(searchResults[0])
+      return
+    }
+    try {
+      const endpoint = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(rawQuery + ', Bengaluru, India')}&limit=1`
+      const res = await fetch(endpoint)
+      const data = await res.json()
+      if (data && data.length > 0) {
+        selectLocation(data[0])
+      }
+    } catch {
+      setMessage('Search error.')
     }
   }
 
@@ -441,13 +451,13 @@ function App() {
           </section>
         )}
 
-        {/* SCREEN 2: 4 EQUALLY DIVIDED CARDS */}
+        {/* SCREEN 2: TOOL SELECTION */}
         {currentScreen === 'purpose' && (
           <section className="features-section">
             <div className="section-heading">
               <span>STEP 1 OF 2</span>
               <h2>Choose Your Dedicated Tool</h2>
-              <p style={{ color: '#666', marginTop: '6px' }}>Each card opens a dedicated workspace tailored to your exact goal.</p>
+              <p style={{ color: '#666', marginTop: '6px' }}>Each card opens a workspace linked dynamically to your plot dimensions and floor count.</p>
             </div>
 
             <div className="feature-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px' }}>
@@ -504,26 +514,24 @@ function App() {
           </section>
         )}
 
-        {/* SCREEN 3: WORKSPACE WITH INTEGRATED MAP, MEASUREMENT CALCULATOR & COST */}
+        {/* SCREEN 3: DYNAMIC WORKSPACE VIEW */}
         {currentScreen === 'tool-view' && (
           <section className="location-section">
             <div className="location-container" style={{ maxWidth: '1100px' }}>
               
-              {/* TOP HEADER CONTROLS */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
                 <div>
                   <span style={{ fontSize: '0.8rem', color: '#666', fontWeight: 'bold' }}>ACTIVE WORKSPACE</span>
                   <h2 style={{ margin: 0, color: '#1b4332' }}>
                     {selectedTool === 'analyze' && '🗺️ Site & Setback Analyzer'}
                     {selectedTool === 'plan' && '🏗️ Floor & Zoning Planner'}
-                    {selectedTool === 'cost' && '💰 Construction Cost & BOQ'}
+                    {selectedTool === 'cost' && '💰 Dynamic Construction Cost & BOQ'}
                     {selectedTool === 'approvals' && '📋 Approval & Compliance Checklist'}
                   </h2>
                 </div>
                 <button className="secondary-button" onClick={() => setCurrentScreen('purpose')}>← Switch Tool</button>
               </div>
 
-              {/* GLOBAL PARAMETERS BAR */}
               <div style={{ background: '#f8f9fa', padding: '16px', borderRadius: '12px', border: '1px solid #e0e0e0', marginBottom: '20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px' }}>
                 <div>
                   <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#555' }}>Building Type</label>
@@ -576,7 +584,6 @@ function App() {
                 </div>
               </div>
 
-              {/* MAP & MEASUREMENT CALCULATOR SECTION */}
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0', marginBottom: '20px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
                   <h3 style={{ margin: 0, color: '#1b4332' }}>📍 Interactive Satellite Plot & Measurement Calculator</h3>
@@ -590,71 +597,61 @@ function App() {
                   </div>
                 </div>
 
-                {/* SEARCH BAR WITH OLA/UBER AUTOCOMPLETE DROPDOWN */}
-                <div style={{ position: 'relative', marginBottom: '12px' }}>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <input 
-                      type="text" 
-                      placeholder="Search locality in Bengaluru (e.g., Whitefield, Indiranagar)..." 
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      style={{ flex: 1, padding: '10px 12px', borderRadius: '6px', border: '1px solid #ccc', fontSize: '0.95rem' }}
-                    />
-                    <button className="primary-button" style={{ padding: '8px 16px' }} onClick={searchLocation}>Search</button>
-                  </div>
+                <div ref={searchContainerRef} style={{ position: 'relative', display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                  <input 
+                    type="text" 
+                    placeholder="Search locality in Bengaluru (e.g., Whitefield, Indiranagar)..." 
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => { if (searchResults.length > 0) setShowSuggestions(true) }}
+                    style={{ flex: 1, padding: '8px 12px', borderRadius: '6px', border: '1px solid #ccc' }}
+                  />
+                  <button className="primary-button" style={{ padding: '8px 16px' }} onClick={searchLocation}>Search</button>
 
-                  {/* AUTOCOMPLETE SUGGESTIONS DROPDOWN */}
-                  {suggestions.length > 0 && (
+                  {showSuggestions && searchResults.length > 0 && (
                     <ul style={{
                       position: 'absolute',
                       top: '100%',
                       left: 0,
-                      right: 0,
+                      right: '85px',
                       background: '#fff',
-                      border: '1px solid #cbd5e1',
-                      borderRadius: '0 0 8px 8px',
-                      boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1)',
+                      border: '1px solid #ccc',
+                      borderRadius: '0 0 6px 6px',
                       listStyle: 'none',
                       margin: '2px 0 0 0',
                       padding: 0,
                       zIndex: 1000,
-                      maxHeight: '220px',
+                      boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+                      maxHeight: '200px',
                       overflowY: 'auto',
                       textAlign: 'left'
                     }}>
-                      {suggestions.map((item, idx) => (
+                      {searchResults.map((item, idx) => (
                         <li 
                           key={idx}
-                          onClick={() => selectSuggestion(item)}
+                          onClick={() => selectLocation(item)}
                           style={{
-                            padding: '10px 14px',
-                            borderBottom: idx < suggestions.length - 1 ? '1px solid #f1f5f9' : 'none',
+                            padding: '10px 12px',
+                            borderBottom: idx < searchResults.length - 1 ? '1px solid #eee' : 'none',
                             cursor: 'pointer',
-                            fontSize: '0.9rem',
-                            color: '#1e293b',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            transition: 'background 0.15s'
+                            fontSize: '0.85rem',
+                            color: '#333'
                           }}
-                          onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
-                          onMouseLeave={(e) => e.currentTarget.style.background = '#fff'}
+                          onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                          onMouseLeave={(e) => e.target.style.background = '#fff'}
                         >
-                          <span style={{ fontSize: '1.1rem' }}>📍</span>
-                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.display_name}</span>
+                          📍 {item.display_name}
                         </li>
                       ))}
                     </ul>
                   )}
                 </div>
 
-                {/* MAP CANVAS */}
                 <div 
                   ref={mapElementRef} 
                   style={{ width: '100%', height: '350px', borderRadius: '8px', border: '1px solid #ccc', marginBottom: '15px' }}
                 />
 
-                {/* MEASUREMENT CALCULATOR DISPLAY */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', background: '#f8f9fa', padding: '15px', borderRadius: '8px' }}>
                   <div>
                     <small style={{ color: '#666', fontWeight: 'bold' }}>CALCULATED PLOT AREA</small>
@@ -681,7 +678,6 @@ function App() {
                 </div>
               </div>
 
-              {/* DEDICATED WORKSPACE VIEWS */}
               {selectedTool === 'analyze' && (
                 <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0' }}>
                   <h3 style={{ marginTop: 0, color: '#1b4332' }}>GBA Setback & Boundary Analysis</h3>
@@ -738,15 +734,155 @@ function App() {
               )}
 
               {selectedTool === 'cost' && (
-                <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0' }}>
-                  <h3 style={{ marginTop: 0, color: '#1b4332' }}>Construction Cost Estimate & Material BOQ</h3>
+                <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0', textAlign: 'left' }}>
+                  <h3 style={{ marginTop: 0, color: '#1b4332' }}>💰 Dynamic Construction Cost & Material BOQ</h3>
+                  <p style={{ color: '#555', fontSize: '0.9rem', marginBottom: '20px' }}>
+                    Calculated automatically for your site area (<b>{calculatedArea.toLocaleString()} sq ft</b>) and chosen configuration (<b>{selectedFloors} Floors</b> = <b>{bylaws.chosenBuiltupArea.toLocaleString()} sq ft</b> total built-up area).
+                  </p>
                   
-                  <div style={{ background: '#e8f5e9', padding: '20px', borderRadius: '8px', marginBottom: '20px' }}>
+                  <div style={{ background: '#e8f5e9', padding: '20px', borderRadius: '8px', marginBottom: '25px', border: '1px solid #c8e6c9' }}>
                     <small style={{ color: '#2e7d32', fontWeight: 'bold' }}>TOTAL ESTIMATED CONSTRUCTION COST ({buildingType.toUpperCase()})</small>
-                    <h2 style={{ margin: '5px 0', color: '#1b4332' }}>₹{costs.totalCostLakhs} Lakhs</h2>
+                    <h2 style={{ margin: '5px 0', color: '#1b4332', fontSize: '2rem' }}>₹{costs.totalCostLakhs} Lakhs</h2>
                     <p style={{ margin: 0, fontSize: '0.9rem', color: '#555' }}>
-                      Calculated for <b>{bylaws.chosenBuiltupArea.toLocaleString()} sq ft</b> total built-up area across {selectedFloors} floors @ ₹{costs.baseRate}/sq ft.
+                      Based on <b>{bylaws.chosenBuiltupArea.toLocaleString()} sq ft</b> built-up area at ₹{costs.baseRate}/sq ft ({qualityGrade} quality grade).
                     </p>
+                  </div>
+
+                  <h4 style={{ color: '#1b4332', borderBottom: '2px solid #e0e0e0', paddingBottom: '6px', marginBottom: '15px' }}>
+                    1. Detailed Stage-Wise Cost Breakdown
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '25px' }}>
+                    
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Excavation & Foundation (approx. 12%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.12)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>Earthwork excavation, PCC (Plain Cement Concrete), column footings, plinth beam, and anti-termite treatment.</p>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Structural Framework & Masonry (approx. 38%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.38)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>RCC columns, beams, slab casting, and brick/block masonry work for all {selectedFloors} floors.</p>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Plastering & Waterproofing (approx. 10%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.10)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>Internal and external wall plastering, roof waterproofing, and balcony sunken slab treatment.</p>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Flooring & Wall Tiling (approx. 12%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.12)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>Vrified tile flooring, bathroom wall/floor tiles, granite staircase steps, and parking tile paving.</p>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Doors, Windows & Railings (approx. 8%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.08)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>Main teak wood door, flush internal doors, UPVC/aluminum windows with glass, and SS/MS balcony railings.</p>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Electrical & Plumbing (approx. 12%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.12)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>Concealed PVC wiring, distribution boards, switches, internal water supply pipes, drainage lines, and sanitary fixtures.</p>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '12px 16px', borderRadius: '8px', borderLeft: '4px solid #2e7d32' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#1b4332' }}>
+                        <span>Painting & Finishing (approx. 8%)</span>
+                        <span style={{ color: '#2e7d32' }}>₹{((costs.totalCostLakhs * 0.08)).toFixed(2)} Lakhs</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#555' }}>Putty work, primer, two coats of interior emulsion, exterior weather-coat paint, and metal gate painting.</p>
+                    </div>
+
+                  </div>
+
+                  <h4 style={{ color: '#1b4332', borderBottom: '2px solid #e0e0e0', paddingBottom: '6px', marginBottom: '15px' }}>
+                    2. Precise Material Bill of Quantities (BOQ)
+                  </h4>
+                  <p style={{ color: '#555', fontSize: '0.85rem', marginBottom: '15px' }}>
+                    Automatically scaled for <b>{bylaws.chosenBuiltupArea.toLocaleString()} sq ft</b> total built-up construction:
+                  </p>
+                  
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '25px' }}>
+                    <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+                      <small style={{ color: '#666', fontWeight: 'bold' }}>CEMENT</small>
+                      <h3 style={{ margin: '4px 0', color: '#1b4332' }}>~{costs.materials.cementBags.toLocaleString()} Bags</h3>
+                      <small style={{ color: '#555' }}>50 kg bags (Grade 43/53 for casting & mortar)</small>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+                      <small style={{ color: '#666', fontWeight: 'bold' }}>STEEL REINFORCEMENT</small>
+                      <h3 style={{ margin: '4px 0', color: '#1b4332' }}>~{costs.materials.steelTons} Tons</h3>
+                      <small style={{ color: '#555' }}>Fe 500 grade TMT bars for columns & slabs</small>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+                      <small style={{ color: '#666', fontWeight: 'bold' }}>COARSE SAND</small>
+                      <h3 style={{ margin: '4px 0', color: '#1b4332' }}>~{costs.materials.sandSqFt.toLocaleString()} cu ft</h3>
+                      <small style={{ color: '#555' }}>Used for concrete mixing & brickwork mortar</small>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+                      <small style={{ color: '#666', fontWeight: 'bold' }}>AGGREGATE STONE</small>
+                      <h3 style={{ margin: '4px 0', color: '#1b4332' }}>~{costs.materials.aggregateSqFt.toLocaleString()} cu ft</h3>
+                      <small style={{ color: '#555' }}>20mm & 40mm stones for structural concrete</small>
+                    </div>
+
+                    <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+                      <small style={{ color: '#666', fontWeight: 'bold' }}>BRICKS / BLOCKS</small>
+                      <h3 style={{ margin: '4px 0', color: '#1b4332' }}>~{costs.materials.bricksCount.toLocaleString()} Units</h3>
+                      <small style={{ color: '#555' }}>Standard red clay bricks or solid concrete blocks</small>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+              {selectedTool === 'approvals' && (
+                <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0', textAlign: 'left' }}>
+                  <h3 style={{ marginTop: 0, color: '#1b4332' }}>3. Clear Legal & Approval Checklist</h3>
+                  <p style={{ color: '#555', fontSize: '0.9rem' }}>Verify that your property documents align with local authority requirements before commencing construction.</p>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '15px' }}>
+                    <div style={{ background: '#e8f5e9', padding: '12px 16px', borderRadius: '8px', border: '1px solid #c8e6c9' }}>
+                      <strong>Title Deed & A-Khata Certificate:</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#333' }}>Mandatory proof of ownership, tax-paid receipts for the last 3 years, and land use classification.</p>
+                    </div>
+
+                    <div style={{ background: '#e8f5e9', padding: '12px 16px', borderRadius: '8px', border: '1px solid #c8e6c9' }}>
+                      <strong>Sanctioned Building Plan:</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#333' }}>Architectural and structural drawings approved by a licensed engineer, ensuring adherence to permissible FAR ({bylaws.far}) and ground coverage ({bylaws.maxCoveragePct}%) limits.</p>
+                    </div>
+
+                    <div style={{ background: '#e8f5e9', padding: '12px 16px', borderRadius: '8px', border: '1px solid #c8e6c9' }}>
+                      <strong>Setback & Road Widening Clearance:</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#333' }}>Verification that the building layout leaves mandatory open space ({bylaws.frontSetback}ft front, {bylaws.rearSetback}ft rear) and conforms to {roadWidth}ft road width rules.</p>
+                    </div>
+
+                    <div style={{ background: '#e8f5e9', padding: '12px 16px', borderRadius: '8px', border: '1px solid #c8e6c9' }}>
+                      <strong>Utility Connections (Temporary Power & Water):</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#333' }}>Securing a temporary commercial electricity meter for construction machinery (mixers, pumps) and borewell/water tanker supply arrangement.</p>
+                    </div>
+
+                    <div style={{ background: '#e8f5e9', padding: '12px 16px', borderRadius: '8px', border: '1px solid #c8e6c9' }}>
+                      <strong>Commencement Certificate (CC):</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#333' }}>Formal intimation submitted to local authorities prior to pouring foundation concrete.</p>
+                    </div>
                   </div>
                 </div>
               )}
